@@ -189,6 +189,7 @@ class RawQuicLayer(layer.Layer):
 
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
         # we treat the datagram layer as child layer, so forward Start
+        print(event)
         if isinstance(event, events.Start):
             if self.context.server.timestamp_start is None:
                 err = yield commands.OpenConnection(self.context.server)

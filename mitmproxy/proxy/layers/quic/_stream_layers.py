@@ -6,6 +6,7 @@ to either the raw layers, or the HTTP/3 client in ../http/_http3.py.
 
 from __future__ import annotations
 
+import socket
 import time
 from collections.abc import Callable
 from logging import DEBUG
@@ -22,6 +23,10 @@ from aioquic.quic.connection import QuicErrorCode
 from aioquic.quic.packet import encode_quic_version_negotiation
 from aioquic.quic.packet import PACKET_TYPE_INITIAL
 from aioquic.quic.packet import pull_quic_header
+from aioquic.quic.packet_builder import *
+from aioquic.quic.connection import *
+from aioquic.tls import *
+
 from cryptography import x509
 
 from ._client_hello_parser import quic_parse_client_hello_from_datagrams
@@ -41,7 +46,7 @@ from ._hooks import QuicTlsSettings
 from mitmproxy import certs
 from mitmproxy import connection
 from mitmproxy import ctx
-from mitmproxy.net import tls
+from mitmproxy.net import tls as mitm_tls
 from mitmproxy.proxy import commands
 from mitmproxy.proxy import context
 from mitmproxy.proxy import events
@@ -57,6 +62,312 @@ from mitmproxy.tls import ClientHelloData
 
 SUPPORTED_QUIC_VERSIONS_SERVER = QuicConfiguration(is_client=False).supported_versions
 
+# Java connection configuration
+JAVA_HOST = 'localhost'
+JAVA_PORT = 1883
+
+import logging
+# Initialize a persistent socket for the Java fuzzer
+java_socket = None
+
+def open_java_connection():
+    """Open a persistent connection to the Java fuzzer."""
+    global java_socket
+    java_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    java_socket.connect((JAVA_HOST, JAVA_PORT))
+    logging.info("Connected to Java fuzzer at {}:{}".format(JAVA_HOST, JAVA_PORT))
+
+def close_java_connection():
+    """Close the persistent connection to the Java fuzzer."""
+    global java_socket
+    if java_socket:
+        java_socket.close()
+        java_socket = None
+
+def send_to_java(data):
+    """Send intercepted data to the Java app and retrieve the modified response over the persistent connection."""
+    global java_socket
+    if java_socket is None:
+        raise ConnectionError("Java connection is not open. Please call open_java_connection() first.")
+
+    java_socket.sendall(data)  # Send data directly (assuming byte data)
+
+    # Read response from the Java fuzzer
+    modified_data = java_socket.recv(65535)  # Adjust buffer size if needed
+    return modified_data
+
+open_java_connection()
+
+def new_end_packet(self) -> None:
+        """
+        Ends the current packet.
+        """
+        print("new_end_packet")
+        buf = self._buffer
+        packet_size = buf.tell() - self._packet_start
+        if packet_size > self._header_size:
+            # padding to ensure sufficient sample size
+            padding_size = (
+                PACKET_NUMBER_MAX_SIZE
+                - PACKET_NUMBER_SEND_SIZE
+                + self._header_size
+                - packet_size
+            )
+
+            # Padding for datagrams containing initial packets; see RFC 9000
+            # section 14.1.
+            if (
+                self._is_client or self._packet.is_ack_eliciting
+            ) and self._packet_type == QuicPacketType.INITIAL:
+                self._datagram_needs_padding = True
+
+            # For datagrams containing 1-RTT data, we *must* apply the padding
+            # inside the packet, we cannot tack bytes onto the end of the
+            # datagram.
+            if (
+                self._datagram_needs_padding
+                and self._packet_type == QuicPacketType.ONE_RTT
+            ):
+                if self.remaining_flight_space > padding_size:
+                    padding_size = self.remaining_flight_space
+                self._datagram_needs_padding = False
+
+            # write padding
+            if padding_size > 0:
+                buf.push_bytes(bytes(padding_size))
+                packet_size += padding_size
+                self._packet.in_flight = True
+
+                # log frame
+                if self._quic_logger is not None:
+                    self._packet.quic_logger_frames.append(
+                        self._quic_logger.encode_padding_frame()
+                    )
+
+            # write header
+            if self._packet_type != QuicPacketType.ONE_RTT:
+                length = (
+                    packet_size
+                    - self._header_size
+                    + PACKET_NUMBER_SEND_SIZE
+                    + self._packet_crypto.aead_tag_size
+                )
+
+                buf.seek(self._packet_start)
+                buf.push_uint8(
+                    encode_long_header_first_byte(
+                        self._version, self._packet_type, PACKET_NUMBER_SEND_SIZE - 1
+                    )
+                )
+                buf.push_uint32(self._version)
+                buf.push_uint8(len(self._peer_cid))
+                buf.push_bytes(self._peer_cid)
+                buf.push_uint8(len(self._host_cid))
+                buf.push_bytes(self._host_cid)
+                if self._packet_type == QuicPacketType.INITIAL:
+                    buf.push_uint_var(len(self._peer_token))
+                    buf.push_bytes(self._peer_token)
+                buf.push_uint16(length | 0x4000)
+                buf.push_uint16(self._packet_number & 0xFFFF)
+            else:
+                buf.seek(self._packet_start)
+                buf.push_uint8(
+                    PACKET_FIXED_BIT
+                    | (self._spin_bit << 5)
+                    | (self._packet_crypto.key_phase << 2)
+                    | (PACKET_NUMBER_SEND_SIZE - 1)
+                )
+                buf.push_bytes(self._peer_cid)
+                buf.push_uint16(self._packet_number & 0xFFFF)
+
+            # encrypt in place
+            plain = buf.data_slice(self._packet_start, self._packet_start + packet_size)
+            print("Encrypting packet: ")
+            print(len(plain))
+            print(plain.hex())
+            # Send data to Java for modification, if applicable
+            try:
+                modified_content = send_to_java(plain)
+                plain = modified_content  # Replace content in flow
+                print("Injected modified content back into QUIC flow")
+                print(len(plain))
+                print(plain.hex())
+            except Exception as e:
+                print("Failed to send data to Java: ")
+                print(e)
+
+            buf.seek(self._packet_start)
+            buf.push_bytes(
+                self._packet_crypto.encrypt_packet(
+                    plain[0 : self._header_size],
+                    plain[self._header_size : packet_size],
+                    self._packet_number,
+                )
+            )
+            self._packet.sent_bytes = buf.tell() - self._packet_start
+            self._packets.append(self._packet)
+            if self._packet.in_flight:
+                self._datagram_flight_bytes += self._packet.sent_bytes
+
+            # Short header packets cannot be coalesced, we need a new datagram.
+            if self._packet_type == QuicPacketType.ONE_RTT:
+                self._flush_current_datagram()
+
+            self._packet_number += 1
+        else:
+            # "cancel" the packet
+            buf.seek(self._packet_start)
+
+        self._packet = None
+        self.quic_logger_frames = None
+
+QuicPacketBuilder._end_packet = new_end_packet
+
+def new_datagrams_to_send(self, now: float) -> List[Tuple[bytes, NetworkAddress]]:
+        """
+        Return a list of `(data, addr)` tuples of datagrams which need to be
+        sent, and the network address to which they need to be sent.
+
+        After calling this method call :meth:`get_timer` to know when the next
+        timer needs to be set.
+
+        :param now: The current time.
+        """
+        print("new_datagrams_to_send")
+        network_path = self._network_paths[0]
+
+        if self._state in END_STATES:
+            return []
+
+        # build datagrams
+        builder = QuicPacketBuilder(
+            host_cid=self.host_cid,
+            is_client=self._is_client,
+            max_datagram_size=self._max_datagram_size,
+            packet_number=self._packet_number,
+            peer_cid=self._peer_cid.cid,
+            peer_token=self._peer_token,
+            quic_logger=self._quic_logger,
+            spin_bit=self._spin_bit,
+            version=self._version,
+        )
+        if self._close_pending:
+            epoch_packet_types = []
+            if not self._handshake_confirmed:
+                epoch_packet_types += [
+                    (tls.Epoch.INITIAL, QuicPacketType.INITIAL),
+                    (tls.Epoch.HANDSHAKE, QuicPacketType.HANDSHAKE),
+                ]
+            epoch_packet_types.append((tls.Epoch.ONE_RTT, QuicPacketType.ONE_RTT))
+            for epoch, packet_type in epoch_packet_types:
+                crypto = self._cryptos[epoch]
+                if crypto.send.is_valid():
+                    builder.start_packet(packet_type, crypto)
+                    self._write_connection_close_frame(
+                        builder=builder,
+                        epoch=epoch,
+                        error_code=self._close_event.error_code,
+                        frame_type=self._close_event.frame_type,
+                        reason_phrase=self._close_event.reason_phrase,
+                    )
+            self._logger.info(
+                "Connection close sent (code 0x%X, reason %s)",
+                self._close_event.error_code,
+                self._close_event.reason_phrase,
+            )
+            self._close_pending = False
+            self._close_begin(is_initiator=True, now=now)
+        else:
+            # congestion control
+            builder.max_flight_bytes = (
+                self._loss.congestion_window - self._loss.bytes_in_flight
+            )
+            if (
+                self._probe_pending
+                and builder.max_flight_bytes < self._max_datagram_size
+            ):
+                builder.max_flight_bytes = self._max_datagram_size
+
+            # limit data on un-validated network paths
+            if not network_path.is_validated:
+                builder.max_total_bytes = (
+                    network_path.bytes_received * 3 - network_path.bytes_sent
+                )
+
+            try:
+                if not self._handshake_confirmed:
+                    for epoch in [tls.Epoch.INITIAL, tls.Epoch.HANDSHAKE]:
+                        self._write_handshake(builder, epoch, now)
+                self._write_application(builder, network_path, now)
+            except QuicPacketBuilderStop:
+                pass
+
+        datagrams, packets = builder.flush()
+
+        if datagrams:
+            self._packet_number = builder.packet_number
+
+            # register packets
+            sent_handshake = False
+            for packet in packets:
+                packet.sent_time = now
+                self._loss.on_packet_sent(
+                    packet=packet, space=self._spaces[packet.epoch]
+                )
+                if packet.epoch == tls.Epoch.HANDSHAKE:
+                    sent_handshake = True
+
+                # log packet
+                if self._quic_logger is not None:
+                    self._quic_logger.log_event(
+                        category="transport",
+                        event="packet_sent",
+                        data={
+                            "frames": packet.quic_logger_frames,
+                            "header": {
+                                "packet_number": packet.packet_number,
+                                "packet_type": self._quic_logger.packet_type(
+                                    packet.packet_type
+                                ),
+                                "scid": (
+                                    ""
+                                    if packet.packet_type == QuicPacketType.ONE_RTT
+                                    else dump_cid(self.host_cid)
+                                ),
+                                "dcid": dump_cid(self._peer_cid.cid),
+                            },
+                            "raw": {"length": packet.sent_bytes},
+                        },
+                    )
+
+            # check if we can discard initial keys
+            if sent_handshake and self._is_client:
+                self._discard_epoch(tls.Epoch.INITIAL)
+
+        # return datagrams to send and the destination network address
+        ret = []
+        for datagram in datagrams:
+            payload_length = len(datagram)
+            network_path.bytes_sent += payload_length
+            ret.append((datagram, network_path.addr))
+
+            if self._quic_logger is not None:
+                self._quic_logger.log_event(
+                    category="transport",
+                    event="datagrams_sent",
+                    data={
+                        "count": 1,
+                        "raw": [
+                            {
+                                "length": UDP_HEADER_SIZE + payload_length,
+                                "payload_length": payload_length,
+                            }
+                        ],
+                    },
+                )
+        return ret
+    
+QuicConnection.datagrams_to_send = new_datagrams_to_send
 
 class QuicLayer(tunnel.TunnelLayer):
     quic: QuicConnection | None = None
@@ -174,6 +485,10 @@ class QuicLayer(tunnel.TunnelLayer):
 
         for data, addr in self.quic.datagrams_to_send(now=now):
             assert addr == self.conn.peername
+            print("Sending QUIC encrypted data: ")
+            print(len(data))
+            print(data.hex())
+            # TODO fuzz before sending
             yield commands.SendData(self.tunnel_connection, data)
 
         timer = self.quic.get_timer()
@@ -449,8 +764,15 @@ class ClientQuicLayer(QuicLayer):
 
         # fail if the received data is not a QUIC packet
         buffer = QuicBuffer(data=data)
+        print("Receiving QUIC encryped data: ")
+        print(len(data))
+        print(data.hex())
+        # TODO fuzz before sending
         try:
             header = pull_quic_header(buffer)
+            print(header)
+            # header_data = pickle.dumps(header)
+            # print(header_data)
         except TypeError:
             return False, f"Cannot parse QUIC header: Malformed head ({data.hex()})"
         except ValueError as e:
@@ -622,8 +944,8 @@ def tls_settings_to_configuration(
         alpn_protocols=settings.alpn_protocols,
         is_client=is_client,
         secrets_log_file=(
-            QuicSecretsLogger(tls.log_master_secret)  # type: ignore
-            if tls.log_master_secret is not None
+            QuicSecretsLogger(mitm_tls.log_master_secret)  # type: ignore
+            if mitm_tls.log_master_secret is not None
             else None
         ),
         server_name=server_name,
