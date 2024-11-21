@@ -84,13 +84,15 @@ def close_java_connection():
         java_socket.close()
         java_socket = None
 
-def send_to_java(data):
+def send_to_java(data, source="unknown"):
     """Send intercepted data to the Java app and retrieve the modified response over the persistent connection."""
     global java_socket
     if java_socket is None:
         raise ConnectionError("Java connection is not open. Please call open_java_connection() first.")
 
-    java_socket.sendall(data)  # Send data directly (assuming byte data)
+    # Prefix data with metadata for source identification
+    metadata = f"{source}:".encode('utf-8')
+    java_socket.sendall(metadata + data))
 
     # Read response from the Java fuzzer
     modified_data = java_socket.recv(65535)  # Adjust buffer size if needed
@@ -187,7 +189,7 @@ def new_end_packet(self) -> None:
             print(plain.hex())
             # Send data to Java for modification, if applicable
             try:
-                modified_content = send_to_java(plain)
+                modified_content = send_to_java(plain, source="client" if self._is_client else "server)
                 plain = modified_content  # Replace content in flow
                 print("Injected modified content back into QUIC flow")
                 print(len(plain))
