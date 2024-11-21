@@ -92,7 +92,7 @@ def send_to_java(data, source="unknown"):
 
     # Prefix data with metadata for source identification
     metadata = f"{source}:".encode('utf-8')
-    java_socket.sendall(metadata + data))
+    java_socket.sendall(metadata + data)
 
     # Read response from the Java fuzzer
     modified_data = java_socket.recv(65535)  # Adjust buffer size if needed
