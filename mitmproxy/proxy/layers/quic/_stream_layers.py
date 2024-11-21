@@ -189,7 +189,7 @@ def new_end_packet(self) -> None:
             print(plain.hex())
             # Send data to Java for modification, if applicable
             try:
-                modified_content = send_to_java(plain, source="client" if self._is_client else "server)
+                modified_content = send_to_java(plain, source="client" if self._is_client else "server")
                 plain = modified_content  # Replace content in flow
                 print("Injected modified content back into QUIC flow")
                 print(len(plain))
