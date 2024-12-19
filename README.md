@@ -20,10 +20,12 @@ interface for HTTP/1, HTTP/2, and WebSockets.
 Motivation: The original project does not support QUIC protocol at transport layer (focus on HTTP3/HTTP over QUIC). This project is an attempt to add support for QUIC protocol in mitmproxy with a transport layer focus. We need to intercept QUIC traffic at the transport layer to analyze the QUIC decrypted packets.
 
 Modifications to the original project are in the following files:
+
 1. `mitmproxy/proxy/layers/quic/_stream_layers.py`:
     - Added a new class new connection to BinFuzz Java project.
     - update the `_end_packet` method of aioquic to handle QUIC packets (now `new_end_packet`). Now the packet are send to the Java fuzzer. Once the fuzzer is done, the packet is sent to the original method, encrypted and sent to the client/server.
     - update `datagrams_to_send` method to handle QUIC packets (now `new_datagrams_to_send`).
+    
 2. `mitmproxy/proxy/layers/quic/_client_hello_parser.py`:
     - update `receive_datagram` method to handle QUIC packets (now `new_receive_datagram`). To see decrypted packets.
 
