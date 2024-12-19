@@ -75,7 +75,7 @@ def open_java_connection():
     global java_socket
     java_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     java_socket.connect((JAVA_HOST, JAVA_PORT))
-    logging.info("Connected to Java fuzzer at {}:{}".format(JAVA_HOST, JAVA_PORT))
+    logging.info("mitm - Connected to Java fuzzer at {}:{}".format(JAVA_HOST, JAVA_PORT))
 
 def close_java_connection():
     """Close the persistent connection to the Java fuzzer."""
@@ -90,6 +90,7 @@ def send_to_java(data):
     if java_socket is None:
         raise ConnectionError("Java connection is not open. Please call open_java_connection() first.")
 
+    print("mitm - Sending data to Java fuzzer {}:{}".format(JAVA_HOST, JAVA_PORT))
     java_socket.sendall(data)  # Send data directly (assuming byte data)
 
     # Read response from the Java fuzzer
@@ -102,7 +103,7 @@ def new_end_packet(self) -> None:
         """
         Ends the current packet.
         """
-        print("new_end_packet")
+        print("mitm - Sending new packet")
         buf = self._buffer
         packet_size = buf.tell() - self._packet_start
         if packet_size > self._header_size:
@@ -182,16 +183,12 @@ def new_end_packet(self) -> None:
 
             # encrypt in place
             plain = buf.data_slice(self._packet_start, self._packet_start + packet_size)
-            print("Encrypting packet: ")
-            print(len(plain))
-            print(plain.hex())
+            print("mitm - Encrypting packet: " + len(plain) + " bytes - " + plain.hex())
             # Send data to Java for modification, if applicable
             try:
                 modified_content = send_to_java(plain)
                 plain = modified_content  # Replace content in flow
-                print("Injected modified content back into QUIC flow")
-                print(len(plain))
-                print(plain.hex())
+                print("mitm - Injected modified content back into QUIC flow - " + len(plain) + " bytes - " + plain.hex())
             except Exception as e:
                 print("Failed to send data to Java: ")
                 print(e)

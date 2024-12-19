@@ -39,7 +39,7 @@ def new_receive_datagram(self, data: bytes, addr:NetworkAddress, now: float) -> 
         :param addr: The network address from which the datagram was received.
         :param now: The current time.
         """
-        print("new_receive_datagram")
+        print("mitm - Receive datagram")
         payload_length = len(data)
 
         # stop handling packets when closing
@@ -201,9 +201,9 @@ def new_receive_datagram(self, data: bytes, addr:NetworkAddress, now: float) -> 
                 plain_header, plain_payload, packet_number = crypto.decrypt_packet(
                     data[start_off:end_off], encrypted_off, space.expected_packet_number
                 )
-                print("Decrypted packet:")
-                print("Header bytes:" + plain_header.hex())
-                print("Payload bytes:" + plain_payload.hex())
+                print("mitm - Decrypted packet:" + \
+                      "\n- Header bytes:" + plain_header.hex() + \
+                      "\n- Payload bytes:" + plain_payload.hex())
             except KeyUnavailableError as exc:
                 self._logger.debug(exc)
                 if self._quic_logger is not None:
