@@ -186,12 +186,12 @@ def new_end_packet(self) -> None:
 
             # encrypt in place
             plain = buf.data_slice(self._packet_start, self._packet_start + packet_size)
-            print("mitm - Encrypting packet: " + len(plain) + " bytes - " + plain.hex())
+            print("mitm - Encrypting packet: " + str(len(plain)) + " bytes - " + str(plain.hex()))
             # Send data to Java for modification, if applicable
             try:
                 modified_content = send_to_java(plain, source="client" if not self._is_client else "server")
                 plain = modified_content  # Replace content in flow
-                print("mitm - Injected modified content back into QUIC flow - " + len(plain) + " bytes - " + plain.hex())
+                print("mitm - Injected modified content back into QUIC flow - " + str(len(plain)) + " bytes - " + str(plain.hex()))
             except Exception as e:
                 print("Failed to send data to Java: ")
                 print(e)
