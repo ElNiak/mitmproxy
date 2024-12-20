@@ -233,7 +233,7 @@ def new_datagrams_to_send(self, now: float) -> List[Tuple[bytes, NetworkAddress]
 
         :param now: The current time.
         """
-        print("new_datagrams_to_send")
+        print("mitm - Sending new datagram")
         network_path = self._network_paths[0]
 
         if self._state in END_STATES:
@@ -485,9 +485,7 @@ class QuicLayer(tunnel.TunnelLayer):
 
         for data, addr in self.quic.datagrams_to_send(now=now):
             assert addr == self.conn.peername
-            print("Sending QUIC encrypted data: ")
-            print(len(data))
-            print(data.hex())
+            print("mitm - Sending QUIC encrypted data - " + str(len(data)) + " bytes - " + str(data.hex()))
             # TODO fuzz before sending
             yield commands.SendData(self.tunnel_connection, data)
 
