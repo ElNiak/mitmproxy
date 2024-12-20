@@ -762,13 +762,11 @@ class ClientQuicLayer(QuicLayer):
 
         # fail if the received data is not a QUIC packet
         buffer = QuicBuffer(data=data)
-        print("Receiving QUIC encryped data: ")
-        print(len(data))
-        print(data.hex())
+        print("mitm - Receiving QUIC encryped data - " + str(len(data)) + " - " + str(data.hex()))
         # TODO fuzz before sending
         try:
             header = pull_quic_header(buffer)
-            print(header)
+            print("mitm - " + str(header))
             # header_data = pickle.dumps(header)
             # print(header_data)
         except TypeError:
