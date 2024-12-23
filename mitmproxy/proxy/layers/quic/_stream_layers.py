@@ -91,7 +91,6 @@ def send_to_java(data, source="unknown"):
         raise ConnectionError("Java connection is not open. Please call open_java_connection() first.")
 
     print("mitm - Sending data to Java fuzzer {}:{}".format(JAVA_HOST, JAVA_PORT))
-    java_socket.sendall(data)  # Send data directly (assuming byte data)
     # Prefix data with metadata for source identification
     metadata = f"{source}:".encode('utf-8')
     java_socket.sendall(metadata + data)
